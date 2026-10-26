@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.ab.new',
+  appId: 'com.abnew.app',
   appName: 'AB-new',
   webDir: 'dist',
   backgroundColor: '#020617',
