@@ -246,7 +246,7 @@ export function startBot() {
     // refresh unrealized pnl on positions
     for (const p of S.positions.values()) p.pnlPct = pnlPct(p.mint);
     emit();
-  }, 5_000);
+  }, 2_000);
   statsTimer = setInterval(() => {
     const s = stats();
     log('info', `📊 الرصيد ${s.equitySol.toFixed(4)} SOL | الربح المحقق ${s.realizedPnlSol >= 0 ? '+' : ''}${s.realizedPnlSol.toFixed(6)} | مفتوح ${s.openPositions}`);
@@ -297,7 +297,7 @@ function connectWs() {
   ws.onclose = () => {
     S.wsConnected = false;
     emit();
-    if (S.running) setTimeout(connectWs, Math.min(15_000, 2_000 + Math.random() * 3_000));
+    if (S.running) setTimeout(connectWs, 1_000 + Math.random() * 2_000);
   };
 }
 
