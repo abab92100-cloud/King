@@ -13,10 +13,21 @@ export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 export const PUMP_PORTAL_TRADE_LOCAL = 'https://pumpportal.fun/api/trade-local';
 export const PUMP_PORTAL_WS = 'wss://pumpportal.fun/api/data';
 
+export type TradeMode = 'paper' | 'live';
+
+export interface PaperConfig {
+  startingSol: number;
+  feePct: number;
+  statsIntervalMs: number;
+}
+
 export interface BotConfig {
   rpcUrl: string;
   /** base58 64-byte private key of the trading wallet */
   privateKey: string;
+  /** paper (default): simulate against live prices — no real funds. live: real trades. */
+  mode: TradeMode;
+  paper: PaperConfig;
   /** sniper: buy new tokens matching filters */
   snipe: boolean;
   /** copy-trade: mirror these wallets' buys */
@@ -39,6 +50,8 @@ export interface BotConfig {
 export const DEFAULT_CONFIG: BotConfig = {
   rpcUrl: 'https://api.mainnet-beta.solana.com',
   privateKey: '',
+  mode: 'paper',
+  paper: { startingSol: 1, feePct: 1, statsIntervalMs: 30_000 },
   snipe: true,
   copyWallets: [],
   buyAmountSol: 0.01,
