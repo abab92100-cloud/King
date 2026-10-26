@@ -247,6 +247,10 @@ function Settings() {
         <Num label="وقف الخسارة عند" k="stopLossPct" step={5} suffix="%" />
         <Num label="أقصى مراكز مفتوحة" k="maxOpenPositions" step={1} />
         <Num label="مدة الحمل" k="holdTimeoutMs" step={60000} suffix="ms" />
+        <Num label="مشترين مطلوبين قبل الدخول" k="minBuySignals" step={1} />
+        <Num label="ارتفاع مؤكد مطلوب" k="minPumpPct" step={5} suffix="%" />
+        <Num label="أقصى عمر للتوكن (ثانية)" k="maxTokenAgeSec" step={10} />
+        <Num label="الوقف المتحرك من القمة" k="trailStopPct" step={5} suffix="%" />
       </div>
 
       {/* filters */}

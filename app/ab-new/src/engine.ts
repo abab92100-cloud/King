@@ -34,6 +34,10 @@ export interface Cfg {
   snipe: boolean;
   copyWallets: string;
   blockNames: string;
+  minBuySignals: number;      // عدد صفقات شراء مؤكدة قبل الدخول
+  minPumpPct: number;         // ارتفاع السعر الأدنى من أول سعر
+  maxTokenAgeSec: number;     // تجاهل التوكنات الأقدم من هذا
+  trailStopPct: number;       // وقف متحرك: ينزل من القمة
 }
 
 export const DEFAULT_CFG: Cfg = {
@@ -49,6 +53,10 @@ export const DEFAULT_CFG: Cfg = {
   snipe: true,
   copyWallets: '',
   blockNames: 'PEPE',
+  minBuySignals: 6,     // انتظر 6 مشترين قبل الدخول (زخم مؤكد)
+  minPumpPct: 25,       // ارتفاع 25%+ من سعر الافتتاح
+  maxTokenAgeSec: 30,   // توكنات أحدث من 30 ثانية فقط
+  trailStopPct: 15,    // اقفل إذا هبط 15% من القمة
 };
 
 export function loadCfg(): Cfg {
@@ -78,6 +86,10 @@ export const S = {
   wsConnected: false,
   streamStartedAt: 0,
   tokensSeen: 0,
+  /** توكنات مرشحة قيد الرصد: نجمع زخمها قبل الدخول */
+  candidates: new Map<string, { symbol: string; openPrice: number; lastPrice: number; buys: number; sells: number; firstSeen: number }>(),
+  /** قمة سعر كل مركز مفتوح — للوقف المتحرك */
+  peaks: new Map<string, number>(),
 };
 
 const subs = new Set<() => void>();
@@ -129,6 +141,7 @@ export function buyPaper(mint: string, symbol: string, why: string): boolean {
   });
   S.trades.unshift({ mint, symbol, side: 'buy', solAmount: S.cfg.buyAmountSol, priceSol: price, pnlSol: 0, reason: why, time: Date.now() });
   if (S.trades.length > 200) S.trades.length = 200;
+  S.peaks.set(mint, price);
   log('success', `🟢 شراء ورقي ${symbol || mint.slice(0, 6)} — ${(tokens / 1e6).toFixed(1)}M توكن`);
   return true;
 }
@@ -147,6 +160,7 @@ export function sellPaper(mint: string, reason: string): number | null {
   if (pnl > S.best) S.best = pnl;
   if (pnl < S.worst) S.worst = pnl;
   S.positions.delete(mint);
+  S.peaks.delete(mint);
   S.trades.unshift({ mint, symbol: pos.symbol, side: 'sell', solAmount: net, priceSol: price, pnlSol: pnl, reason, time: Date.now() });
   const pct = (pnl / pos.entrySol * 100).toFixed(1);
   log(pnl >= 0 ? 'success' : 'warn', `🔴 بيع ورقي ${pos.symbol || mint.slice(0, 6)} — ${reason} — ${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pct}%)`);
@@ -193,6 +207,19 @@ function exitReason(pos: PaperPos): string | null {
   const pnl = pnlPct(pos.mint);
   if (pnl >= c.takeProfitPct) return `جني أرباح ${pnl.toFixed(1)}%`;
   if (pnl <= -c.stopLossPct) return `وقف خسارة ${pnl.toFixed(1)}%`;
+
+  // الوقف المتحرك: إذا صنعنا ربحًا ثم هبطنا من القمة — نحفظ المكسب
+  const peak = S.peaks.get(pos.mint);
+  const cur = priceOf(pos.mint);
+  if (peak && cur > 0) {
+    const fromPeakPct = (1 - cur / peak) * 100;
+    const gainedPct = (peak / pos.entryPriceSol - 1) * 100;
+    // لا يتفعّل إلا بعد ربح 10%+ ثم هبوط من القمة بنسبة الوقف المتحرك
+    if (gainedPct >= 10 && fromPeakPct >= c.trailStopPct) {
+      return `وقف متحرك ${pnl.toFixed(1)}% (هبط ${fromPeakPct.toFixed(0)}% من القمة)`;
+    }
+  }
+
   if (Date.now() - pos.entryTime >= c.holdTimeoutMs) return 'مهلة الحمل انتهت';
   return null;
 }
@@ -275,18 +302,72 @@ function connectWs() {
 }
 
 function handleEvent(m: any) {
-  // price feed from every market trade
-  if (m.mint && Number(m.solAmount) > 0 && Number(m.tokenAmount) > 0) {
-    S.prices.set(m.mint, Number(m.solAmount) / Number(m.tokenAmount));
-  }
-  if (m.method === 'newToken' && m.mint) {
+  if (!m?.mint) return;
+  const price = (Number(m.solAmount) > 0 && Number(m.tokenAmount) > 0)
+    ? Number(m.solAmount) / Number(m.tokenAmount) : 0;
+
+  if (m.method === 'newToken') {
+    // توكن جديد: سجّله مرشحًا وراقب صفقاته — لا تشتر فورًا
     S.tokensSeen++;
-    S.prices.set(m.mint, 0.00000005); // placeholder opening price
-    if (!S.cfg.snipe || !S.running) return;
-    const decision = shouldSnipe(m.mint, m.name ?? '', m.symbol ?? '', 0);
-    if (decision.ok) buyPaper(m.mint, m.symbol || m.name || m.mint.slice(0, 6), 'snipe: ' + decision.why);
-    else log('warn', `تخطي ${m.symbol || m.mint.slice(0, 6)}: ${decision.why}`);
+    S.candidates.set(m.mint, {
+      symbol: m.symbol || m.name || m.mint.slice(0, 6),
+      openPrice: price || 0, lastPrice: price || 0,
+      buys: 0, sells: 0, firstSeen: Date.now(),
+    });
     emit();
+    return;
+  }
+
+  // صفقة سوق حية على توكن نرصده أو نحمله
+  if (price > 0) {
+    S.prices.set(m.mint, price);
+
+    // حدّث قمة المركز المفتوح (للوقف المتحرك)
+    if (S.positions.has(m.mint)) {
+      const peak = S.peaks.get(m.mint) ?? price;
+      if (price > peak) S.peaks.set(m.mint, price);
+    }
+
+    // حدّث المرشح وقرر الدخول عند اكتمال الزخم
+    const cand = S.candidates.get(m.mint);
+    if (cand) {
+      cand.lastPrice = price;
+      if (m.isBuy === true || m.buy === true) cand.buys++; else cand.sells++;
+      maybeEnter(m.mint, cand);
+    }
+  }
+}
+
+/** الدخول فقط عند اكتمال شروط الزخم — لا شراء أعمى */
+function maybeEnter(mint: string, cand: { symbol: string; openPrice: number; lastPrice: number; buys: number; sells: number; firstSeen: number }) {
+  if (!S.running || !S.cfg.snipe) return;
+  if (S.positions.has(mint)) return; // نحمله بالفعل
+  const c = S.cfg;
+  const ageSec = (Date.now() - cand.firstSeen) / 1000;
+
+  // تجاهل المرشح إذا فات عمره أو انقلب لبيع كاسح
+  if (ageSec > c.maxTokenAgeSec) { S.candidates.delete(mint); return; }
+
+  const pumpPct = cand.openPrice > 0 ? (cand.lastPrice / cand.openPrice - 1) * 100 : 0;
+  const buyPressure = cand.buys / Math.max(1, cand.buys + cand.sells) * 100;
+
+  // شروط الدخول: عدد مشترين كافٍ + ارتفاع مؤكد + ضغط شراء غالب
+  if (cand.buys >= c.minBuySignals && pumpPct >= c.minPumpPct && buyPressure >= 70) {
+    const nameOk = shouldSnipe(mint, cand.symbol, cand.symbol, 0);
+    if (!nameOk.ok) { S.candidates.delete(mint); return; }
+    const ok = buyPaper(mint, cand.symbol, `زخم: ${cand.buys} مشتري +${pumpPct.toFixed(0)}%`);
+    if (ok) {
+      S.peaks.set(mint, cand.lastPrice);
+      S.candidates.delete(mint);
+      subscribeMintTrades(mint);
+    }
+  }
+}
+
+/** اشترك في صفقات توكن نحمله — أسعار حية حقيقية للمركز */
+function subscribeMintTrades(mint: string) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [mint] }));
   }
 }
 
