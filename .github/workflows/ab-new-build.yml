@@ -103,4 +103,5 @@ jobs:
           git add releases/AB-new-latest.apk
           git add -f app/ab-new/android/ab-release.keystore
           git commit -m "ci: update AB-new-latest.apk [skip ci]" || echo "no change"
-          git push
+          git pull --rebase origin main || true
+          git push || echo "push deferred — APK already built as artifact"
