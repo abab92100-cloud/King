@@ -1,0 +1,6 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+html, body { margin: 0; padding: 0; background: #020617; overscroll-behavior: none; }

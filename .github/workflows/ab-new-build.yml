@@ -1,0 +1,106 @@
+name: Build AB-new APK
+on:
+  push:
+    branches: ["main", "vibe/**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+
+      - name: Build web
+        working-directory: app/ab-new
+        run: |
+          npm ci
+          npm run build
+
+      - name: Sync Capacitor Android
+        working-directory: app/ab-new
+        run: npx cap sync android
+
+      - name: Install ImageMagick
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick >/dev/null 2>&1 || true
+
+      - name: Generate launcher icons
+        working-directory: app/ab-new/android/app/src/main/res
+        run: |
+          set -e
+          ICON="${GITHUB_WORKSPACE}/app/ab-new/app-icon.png"
+          convert "$ICON" -resize 1024x1024^ -gravity center -extent 1024x1024 /tmp/icon-master.png
+          convert /tmp/icon-master.png -resize 48x48   mipmap-mdpi/ic_launcher.png
+          convert /tmp/icon-master.png -resize 72x72   mipmap-hdpi/ic_launcher.png
+          convert /tmp/icon-master.png -resize 96x96   mipmap-xhdpi/ic_launcher.png
+          convert /tmp/icon-master.png -resize 144x144 mipmap-xxhdpi/ic_launcher.png
+          convert /tmp/icon-master.png -resize 192x192 mipmap-xxxhdpi/ic_launcher.png
+          convert /tmp/icon-master.png -resize 48x48   mipmap-mdpi/ic_launcher_round.png
+          convert /tmp/icon-master.png -resize 72x72   mipmap-hdpi/ic_launcher_round.png
+          convert /tmp/icon-master.png -resize 96x96   mipmap-xhdpi/ic_launcher_round.png
+          convert /tmp/icon-master.png -resize 144x144 mipmap-xxhdpi/ic_launcher_round.png
+          convert /tmp/icon-master.png -resize 192x192 mipmap-xxxhdpi/ic_launcher_round.png
+
+      - name: Ensure stable release keystore
+        working-directory: app/ab-new/android
+        run: |
+          if [ ! -f ab-release.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore ab-release.keystore \
+              -alias ab-release \
+              -keyalg RSA -keysize 2048 -validity 10950 \
+              -storepass ABnew2024 -keypass ABnew2024 \
+              -dname "CN=AB-new, OU=Mobile, O=AB, L=Riyadh, C=SA"
+          else
+            echo "stable keystore found — reusing"
+          fi
+
+      - name: Sign with stable keystore
+        working-directory: app/ab-new/android
+        run: |
+          cat >> app/build.gradle <<'EOF'
+          android.signingConfigs {
+              abRelease {
+                  storeFile rootProject.file('ab-release.keystore')
+                  storePassword 'ABnew2024'
+                  keyAlias 'ab-release'
+                  keyPassword 'ABnew2024'
+              }
+          }
+          android.buildTypes.release.signingConfig = android.signingConfigs.abRelease
+          EOF
+
+      - name: Build APK
+        working-directory: app/ab-new/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Rename APK
+        working-directory: app/ab-new/android
+        run: cp app/build/outputs/apk/release/app-release.apk AB-new-signed.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AB-new-signed-apk
+          path: app/ab-new/android/AB-new-signed.apk
+
+      - name: Commit APK + keystore to repo (direct download link)
+        run: |
+          git config user.name "ci-bot"
+          git config user.email "ci@users.noreply.github.com"
+          cp app/ab-new/android/AB-new-signed.apk releases/AB-new-latest.apk
+          git add releases/AB-new-latest.apk
+          git add app/ab-new/android/ab-release.keystore
+          git commit -m "ci: update AB-new-latest.apk [skip ci]" || echo "no change"
+          git push

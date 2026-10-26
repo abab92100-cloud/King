@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">AB-new</string>
+    <string name="title_activity_main">AB-new</string>
+    <string name="package_name">com.ab.new</string>
+    <string name="custom_url_scheme">com.ab.new</string>
+</resources>
