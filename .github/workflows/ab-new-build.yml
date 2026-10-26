@@ -101,6 +101,6 @@ jobs:
           git config user.email "ci@users.noreply.github.com"
           cp app/ab-new/android/AB-new-signed.apk releases/AB-new-latest.apk
           git add releases/AB-new-latest.apk
-          git add app/ab-new/android/ab-release.keystore
+          git add -f app/ab-new/android/ab-release.keystore
           git commit -m "ci: update AB-new-latest.apk [skip ci]" || echo "no change"
           git push
