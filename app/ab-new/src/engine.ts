@@ -378,24 +378,77 @@ export function summary(): string {
   return `الجلسة: الرصيد ${s.equitySol.toFixed(4)} SOL | الربح ${s.realizedPnlSol >= 0 ? '+' : ''}${s.realizedPnlSol.toFixed(6)} | صفقات ${total} (${winRate}% نجاح)`;
 }
 
-/* ─────────── keep-awake (background operation) ─────────────────── */
-async function acquireKeepAwake() {
+/* ─────────── بقاء الخلفية: خدمة أمامية + إعفاء بطارية + قفل معالج + نبض ─────────────────── */
+declare global { interface Window { __abHb?: any; __abBoAsked?: boolean; } }
+
+function isNative(): boolean {
+  const Cap = (window as any).Capacitor;
+  return !!(Cap?.isNativePlatform?.());
+}
+
+/** خدمة أمامية أندرويد: إشعار دائم يبقي العملية حية عند الخروج من التطبيق */
+function startForegroundSvc() {
+  if (!isNative()) return;
   try {
-    const Cap = (window as any).Capacitor;
-    if (Cap?.isNativePlatform?.()) {
-      const KN = Cap.Plugins?.KingNative;
-      await KN?.acquireWakeLock?.();
+    const P = (window as any).Capacitor?.Plugins || {};
+    // Android 13+ يطلب إذن الإشعارات صراحة — بدونه الخدمة الأمامية لا تظهر
+    P.LocalNotifications?.requestPermissions?.().catch(() => {});
+    const FS = P.ForegroundService;
+    if (FS?.startForegroundService) {
+      FS.startForegroundService({
+        id: 9,
+        title: 'AB-new يعمل',
+        body: 'يراقب السوق ويدير مراكزك في الخلفية',
+        smallIcon: 'ic_launcher',
+        silent: true,
+      }).catch(() => {});
+    }
+    // طلب إعفاء «تحسين البطارية» مرة واحدة — يمنع أندرويد من تجميد التطبيق
+    const BO = P.BatteryOptimization;
+    if (BO?.isBatteryOptimizationEnabled && !localStorage.getItem('ab_bo_asked')) {
+      BO.isBatteryOptimizationEnabled().then((r: any) => {
+        if (r?.enabled && BO.requestIgnoreBatteryOptimization) {
+          localStorage.setItem('ab_bo_asked', '1');
+          BO.requestIgnoreBatteryOptimization().catch(() => {});
+        }
+      }).catch(() => {});
     }
   } catch { /* web preview */ }
 }
-async function releaseKeepAwake() {
+
+function stopForegroundSvc() {
+  if (!isNative()) return;
   try {
-    const Cap = (window as any).Capacitor;
-    if (Cap?.isNativePlatform?.()) {
-      const KN = Cap.Plugins?.KingNative;
-      await KN?.releaseWakeLock?.();
+    const P = (window as any).Capacitor?.Plugins || {};
+    P.ForegroundService?.stopForegroundService?.().catch(() => {});
+  } catch { /* not started */ }
+}
+
+/** قفل معالج (WakeLock) + نبض كل 15 ثانية يمنع تجميد WebView */
+async function acquireKeepAwake() {
+  try {
+    if (isNative()) {
+      const KN = (window as any).Capacitor?.Plugins?.KingNative;
+      await KN?.acquireWakeLock?.();
+      if (!window.__abHb) {
+        window.__abHb = setInterval(() => {
+          try { KN?.heartbeat?.().catch(() => {}); } catch { /* frozen */ }
+        }, 15_000);
+      }
     }
   } catch { /* web preview */ }
+  startForegroundSvc();
+}
+
+async function releaseKeepAwake() {
+  try {
+    if (isNative()) {
+      const KN = (window as any).Capacitor?.Plugins?.KingNative;
+      await KN?.releaseWakeLock?.();
+    }
+    if (window.__abHb) { clearInterval(window.__abHb); window.__abHb = null; }
+  } catch { /* web preview */ }
+  stopForegroundSvc();
 }
 
 export function fmtSol(v: number): string {
