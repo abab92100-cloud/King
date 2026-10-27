@@ -8,34 +8,34 @@ import {
 const CSS = `
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:#0a0e14;color:#e8eef5;font:14px/1.6 -apple-system,'Segoe UI',Tahoma,sans-serif;overscroll-behavior:none}
-.app{max-width:520px;margin:0 auto;min-height:100vh;padding-bottom:76px}
-.hdr{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;padding:calc(10px + env(safe-area-inset-top,0px)) 14px 10px;background:rgba(10,14,20,.94);backdrop-filter:blur(10px);border-bottom:1px solid #1c2536}
-.logo{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#0ea5e9,#6366f1);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:14px;color:#fff;letter-spacing:-.5px}
+.app{max-width:520px;margin:0 auto;min-height:100vh;padding-bottom:62px}
+.hdr{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:9px;padding:calc(6px + env(safe-area-inset-top,0px)) 12px 6px;background:rgba(10,14,20,.94);backdrop-filter:blur(10px);border-bottom:1px solid #1c2536}
+.logo{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,#0ea5e9,#6366f1);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:12px;color:#fff;letter-spacing:-.5px}
 .hdr .t{flex:1;min-width:0}
-.hdr .t b{display:block;font-size:15px}
-.hdr .t s{font-size:10px;color:#64748b;text-decoration:none;letter-spacing:.2em}
+.hdr .t b{display:block;font-size:14px;line-height:1.2}
+.hdr .t s{font-size:9px;color:#64748b;text-decoration:none;letter-spacing:.2em}
 .badge{font-size:10px;font-weight:800;padding:4px 10px;border-radius:999px}
 .badge.paper{background:rgba(14,165,233,.15);color:#38bdf8}
 .badge.live{background:rgba(245,158,11,.15);color:#f59e0b}
 .badge.run{background:rgba(34,197,94,.15);color:#22c55e}
 .badge.stop{background:rgba(100,116,139,.15);color:#64748b}
 
-.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 14px 4px}
-.stat{background:#11161f;border:1px solid #1c2536;border-radius:12px;padding:10px 12px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;padding:10px 12px 2px}
+.stat{background:#11161f;border:1px solid #1c2536;border-radius:12px;padding:8px 10px}
 .stat .k{font-size:10px;color:#64748b;font-weight:600}
 .stat .v{font-size:16px;font-weight:800;margin-top:2px;font-variant-numeric:tabular-nums}
 .up{color:#22c55e}.dn{color:#f43f5e}
 
-.hero{margin:10px 14px;padding:14px;border-radius:14px;background:linear-gradient(145deg,#11161f,#0d1220);border:1px solid #1c2536;display:flex;align-items:center;gap:12px}
+.hero{margin:8px 12px;padding:12px;border-radius:14px;background:linear-gradient(145deg,#11161f,#0d1220);border:1px solid #1c2536;display:flex;align-items:center;gap:12px}
 .hero .eq{flex:1}
 .hero .eq .k{font-size:10px;color:#64748b;font-weight:600}
-.hero .eq .v{font-size:26px;font-weight:900;font-variant-numeric:tabular-nums}
-.btn-run{border:none;border-radius:14px;padding:14px 22px;font-size:16px;font-weight:800;color:#fff;width:104px}
+.hero .eq .v{font-size:22px;font-weight:900;font-variant-numeric:tabular-nums}
+.btn-run{border:none;border-radius:12px;padding:12px 18px;font-size:15px;font-weight:800;color:#fff;width:96px}
 .btn-run.on{background:linear-gradient(135deg,#16a34a,#22c55e)}
 .btn-run.off{background:linear-gradient(135deg,#b91c1c,#ef4444)}
 .btn-run:active{transform:scale(.96)}
 
-.sec{padding:12px 14px 0}
+.sec{padding:10px 12px 0}
 .sec h3{margin:0 0 8px;font-size:12px;font-weight:800;color:#94a3b8;display:flex;align-items:center;gap:6px}
 .card{background:#11161f;border:1px solid #1c2536;border-radius:12px;padding:11px 12px;margin-bottom:8px}
 .row{display:flex;align-items:center;gap:8px}
@@ -52,9 +52,9 @@ html,body{margin:0;background:#0a0e14;color:#e8eef5;font:14px/1.6 -apple-system,
 
 .nav{position:fixed;bottom:0;left:0;right:0;z-index:30;background:rgba(10,14,20,.96);backdrop-filter:blur(12px);border-top:1px solid #1c2536}
 .nav .in{max-width:520px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr)}
-.nav button{background:none;border:none;color:#54617a;padding:9px 0 10px;font-size:10px;font-weight:700}
+.nav button{background:none;border:none;color:#54617a;padding:6px 0 7px;font-size:10px;font-weight:700}
 .nav button.act{color:#0ea5e9}
-.nav .ic{font-size:17px;display:block;line-height:1.2}
+.nav .ic{font-size:15px;display:block;line-height:1.1}
 
 .set-row{display:flex;align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a2233}
 .set-row:last-child{border-bottom:none}
@@ -225,6 +225,10 @@ function Settings() {
         <div className="seg">
           <button className={c.mode === 'paper' ? 'act' : ''} onClick={() => upd('mode', 'paper')}>📝 ورقي (تجربة)</button>
           <button className={c.mode === 'live' ? 'act' : ''} onClick={() => upd('mode', 'live')}>⚡ حقيقي</button>
+        </div>
+        <div className="set-row">
+          <div className="k">سيرفر مثبّت<s>ws://ip:port — بث دائم بلا انقطاع</s></div>
+          <input type="text" value={c.relayUrl} placeholder="اتصال مباشر" onChange={e => upd('relayUrl', e.target.value)} />
         </div>
       </div>
 

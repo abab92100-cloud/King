@@ -38,6 +38,7 @@ export interface Cfg {
   minPumpPct: number;         // ارتفاع السعر الأدنى من أول سعر
   maxTokenAgeSec: number;     // تجاهل التوكنات الأقدم من هذا
   trailStopPct: number;       // وقف متحرك: ينزل من القمة
+  relayUrl: string;           // سيرفر مثبّت اختياري (ws://ip:port) — بث دائم بلا انقطاع
 }
 
 export const DEFAULT_CFG: Cfg = {
@@ -53,10 +54,11 @@ export const DEFAULT_CFG: Cfg = {
   snipe: true,
   copyWallets: '',
   blockNames: 'PEPE',
-  minBuySignals: 6,     // انتظر 6 مشترين قبل الدخول (زخم مؤكد)
-  minPumpPct: 25,       // ارتفاع 25%+ من سعر الافتتاح
-  maxTokenAgeSec: 30,   // توكنات أحدث من 30 ثانية فقط
+  minBuySignals: 4,     // 4 مشترين قبل الدخول
+  minPumpPct: 15,       // ارتفاع 25%+ من سعر الافتتاح
+  maxTokenAgeSec: 45,   // توكنات أحدث من 30 ثانية فقط
   trailStopPct: 15,    // اقفل إذا هبط 15% من القمة
+  relayUrl: '',        // فارغ = اتصال مباشر، أو ws://عنوان:منفذ
 };
 
 export function loadCfg(): Cfg {
@@ -161,6 +163,7 @@ export function sellPaper(mint: string, reason: string): number | null {
   if (pnl < S.worst) S.worst = pnl;
   S.positions.delete(mint);
   S.peaks.delete(mint);
+  unsubscribeMintTrades(mint);
   S.trades.unshift({ mint, symbol: pos.symbol, side: 'sell', solAmount: net, priceSol: price, pnlSol: pnl, reason, time: Date.now() });
   const pct = (pnl / pos.entrySol * 100).toFixed(1);
   log(pnl >= 0 ? 'success' : 'warn', `🔴 بيع ورقي ${pos.symbol || mint.slice(0, 6)} — ${reason} — ${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pct}%)`);
@@ -272,7 +275,8 @@ export function stopBot() {
 
 function connectWs() {
   try {
-    ws = new WebSocket('wss://pumpportal.fun/api/data');
+    const url = S.cfg.relayUrl?.trim() || 'wss://pumpportal.fun/api/data';
+    ws = new WebSocket(url);
   } catch (e) {
     log('error', 'فشل الاتصال بالبث: ' + String(e));
     return;
@@ -307,13 +311,14 @@ function handleEvent(m: any) {
     ? Number(m.solAmount) / Number(m.tokenAmount) : 0;
 
   if (m.method === 'newToken') {
-    // توكن جديد: سجّله مرشحًا وراقب صفقاته — لا تشتر فورًا
+    // توكن جديد: سجّله مرشحًا واشترك بصفقاته فورًا — بدونها لا يصل أي زخم!
     S.tokensSeen++;
     S.candidates.set(m.mint, {
       symbol: m.symbol || m.name || m.mint.slice(0, 6),
       openPrice: price || 0, lastPrice: price || 0,
       buys: 0, sells: 0, firstSeen: Date.now(),
     });
+    subscribeMintTrades(m.mint);
     emit();
     return;
   }
@@ -346,7 +351,7 @@ function maybeEnter(mint: string, cand: { symbol: string; openPrice: number; las
   const ageSec = (Date.now() - cand.firstSeen) / 1000;
 
   // تجاهل المرشح إذا فات عمره أو انقلب لبيع كاسح
-  if (ageSec > c.maxTokenAgeSec) { S.candidates.delete(mint); return; }
+  if (ageSec > c.maxTokenAgeSec) { S.candidates.delete(mint); unsubscribeMintTrades(mint); return; }
 
   const pumpPct = cand.openPrice > 0 ? (cand.lastPrice / cand.openPrice - 1) * 100 : 0;
   const buyPressure = cand.buys / Math.max(1, cand.buys + cand.sells) * 100;
@@ -354,7 +359,7 @@ function maybeEnter(mint: string, cand: { symbol: string; openPrice: number; las
   // شروط الدخول: عدد مشترين كافٍ + ارتفاع مؤكد + ضغط شراء غالب
   if (cand.buys >= c.minBuySignals && pumpPct >= c.minPumpPct && buyPressure >= 70) {
     const nameOk = shouldSnipe(mint, cand.symbol, cand.symbol, 0);
-    if (!nameOk.ok) { S.candidates.delete(mint); return; }
+    if (!nameOk.ok) { S.candidates.delete(mint); unsubscribeMintTrades(mint); return; }
     const ok = buyPaper(mint, cand.symbol, `زخم: ${cand.buys} مشتري +${pumpPct.toFixed(0)}%`);
     if (ok) {
       S.peaks.set(mint, cand.lastPrice);
@@ -369,6 +374,16 @@ function subscribeMintTrades(mint: string) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [mint] }));
   }
+}
+
+/** إلغاء الاشتراك بعد انتهاء الرصد — يمنع تراكم الاشتراكات وقتل السرعة */
+function unsubscribeMintTrades(mint: string) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ method: 'unsubscribeTokenTrade', keys: [mint] }));
+    } catch { /* stream closed */ }
+  }
+  S.prices.delete(mint);
 }
 
 export function summary(): string {
