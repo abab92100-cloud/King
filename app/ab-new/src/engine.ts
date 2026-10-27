@@ -229,6 +229,7 @@ function exitReason(pos: PaperPos): string | null {
 /* ─────────── live stream (PumpPortal WS) ─────────── */
 let ws: WebSocket | null = null;
 let wsBackoff = 500;
+let lastDropLog = 0;
 let monitor: ReturnType<typeof setInterval> | null = null;
 let statsTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -299,13 +300,18 @@ function connectWs() {
       }
     } catch { /* malformed frame */ }
   };
-  ws.onerror = () => { log('warn', 'خطأ بالبث — سيُعاد الاتصال'); };
+  ws.onerror = () => { /* صامت — onclose يتكفل بإعادة الاتصال الفورية */ };
   ws.onclose = () => {
     S.wsConnected = false;
     emit();
     if (S.running) {
-      setTimeout(connectWs, wsBackoff + Math.random() * 500);
-      wsBackoff = Math.min(8_000, Math.round(wsBackoff * 1.7));
+      // إعادة فورية صامتة — انقطاعات الشبكة المحمولة طبيعية ودورية؛ الاستقصاء يغطي كل بيانات الأسعار
+      setTimeout(connectWs, 600 + Math.random() * 400);
+      const now = Date.now();
+      if (now - lastDropLog > 600_000) {
+        lastDropLog = now;
+        log('info', 'ملاحظة: شبكة الجوال تقطع البث دوريًا — إعادة الاتصال تلقائية فورية، التداول غير متأثر');
+      }
     }
   };
 }
@@ -365,7 +371,19 @@ async function pollDexscreener() {
         if (!prev || (pair.dexId === 'pumpfun' && prev.dexId !== 'pumpfun')) byMint.set(mint, pair);
       }
       for (const [mint, pair] of byMint) {
-        if (!S.candidates.has(mint) && !S.positions.has(mint)) continue;
+        // التقط توكنات فاتها إطار create أثناء انقطاع لحظي: زوج pump.fun جديد العهد
+        if (!S.candidates.has(mint) && !S.positions.has(mint)) {
+          const created = Number(pair.pairCreatedAt) || 0;
+          if (pair.dexId === 'pumpfun' && created > 0 && Date.now() - created < 120_000) {
+            S.candidates.set(mint, {
+              symbol: pair.baseToken?.symbol || mint.slice(0, 6),
+              openPrice: Number(pair.priceNative) || 0, lastPrice: Number(pair.priceNative) || 0,
+              buys: 0, sells: 0, firstSeen: created,
+            });
+          } else {
+            continue;
+          }
+        }
         const price = Number(pair.priceNative) || 0;
         if (price > 0) {
           S.prices.set(mint, price);
