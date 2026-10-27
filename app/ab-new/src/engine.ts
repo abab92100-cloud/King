@@ -89,7 +89,7 @@ export const S = {
   streamStartedAt: 0,
   tokensSeen: 0,
   /** توكنات مرشحة قيد الرصد: نجمع زخمها قبل الدخول */
-  candidates: new Map<string, { symbol: string; openPrice: number; lastPrice: number; buys: number; sells: number; firstSeen: number }>(),
+  candidates: new Map<string, { symbol: string; openPrice: number; lastPrice: number; buys: number; sells: number; firstSeen: number; devBuySol?: number; mcapSol?: number }>(),
   /** قمة سعر كل مركز مفتوح — للوقف المتحرك */
   peaks: new Map<string, number>(),
 };
@@ -163,7 +163,6 @@ export function sellPaper(mint: string, reason: string): number | null {
   if (pnl < S.worst) S.worst = pnl;
   S.positions.delete(mint);
   S.peaks.delete(mint);
-  unsubscribeMintTrades(mint);
   S.trades.unshift({ mint, symbol: pos.symbol, side: 'sell', solAmount: net, priceSol: price, pnlSol: pnl, reason, time: Date.now() });
   const pct = (pnl / pos.entrySol * 100).toFixed(1);
   log(pnl >= 0 ? 'success' : 'warn', `🔴 بيع ورقي ${pos.symbol || mint.slice(0, 6)} — ${reason} — ${pnl >= 0 ? '+' : ''}${pnl.toFixed(6)} SOL (${pct}%)`);
@@ -229,6 +228,7 @@ function exitReason(pos: PaperPos): string | null {
 
 /* ─────────── live stream (PumpPortal WS) ─────────── */
 let ws: WebSocket | null = null;
+let wsBackoff = 500;
 let monitor: ReturnType<typeof setInterval> | null = null;
 let statsTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -241,6 +241,8 @@ export function startBot() {
   S.trades.length = 0; S.logs.length = 0;
   S.wins = S.losses = S.realized = S.best = S.worst = 0;
   connectWs();
+  pollTimer = setInterval(() => { void pollDexscreener(); }, 12_000);
+  void pollDexscreener();
   monitor = setInterval(() => {
     for (const pos of [...S.positions.values()]) {
       const why = exitReason(pos);
@@ -264,9 +266,10 @@ export function stopBot() {
   S.running = false;
   try { ws?.close(); } catch { /* already closed */ }
   ws = null;
+  if (pollTimer) clearInterval(pollTimer);
   if (monitor) clearInterval(monitor);
   if (statsTimer) clearInterval(statsTimer);
-  monitor = statsTimer = null;
+  pollTimer = monitor = statsTimer = null;
   S.wsConnected = false;
   releaseKeepAwake();
   log('info', summary());
@@ -283,10 +286,9 @@ function connectWs() {
   }
   ws.onopen = () => {
     S.wsConnected = true;
+    wsBackoff = 500;
     ws?.send(JSON.stringify({ method: 'subscribeNewToken' }));
-    const wallets = S.cfg.copyWallets.split(',').map(s => s.trim()).filter(Boolean);
-    if (wallets.length) ws?.send(JSON.stringify({ method: 'subscribeAccountTrade', keys: wallets }));
-    log('success', 'اتصال البث المباشر ✓ (يراقب كل توكن جديد)');
+    log('success', 'اتصال البث ✓ (إعلانات التوكنات) + استقصاء أسعار DexScreener كل 12 ثانية');
     emit();
   };
   ws.onmessage = ev => {
@@ -301,89 +303,118 @@ function connectWs() {
   ws.onclose = () => {
     S.wsConnected = false;
     emit();
-    if (S.running) setTimeout(connectWs, 1_000 + Math.random() * 2_000);
+    if (S.running) {
+      setTimeout(connectWs, wsBackoff + Math.random() * 500);
+      wsBackoff = Math.min(8_000, Math.round(wsBackoff * 1.7));
+    }
   };
 }
 
 function handleEvent(m: any) {
   if (!m?.mint) return;
-  const price = (Number(m.solAmount) > 0 && Number(m.tokenAmount) > 0)
-    ? Number(m.solAmount) / Number(m.tokenAmount) : 0;
-
-  if (m.method === 'newToken') {
-    // توكن جديد: سجّله مرشحًا واشترك بصفقاته فورًا — بدونها لا يصل أي زخم!
+  // توكن جديد — إطار create يحمل بيانات غنية مباشرة
+  if (m.txType === 'create') {
     S.tokensSeen++;
+    const vSol = Number(m.vSolInBondingCurve) || 0;
+    const vTok = Number(m.vTokensInBondingCurve) || 0;
+    const openPrice = (vSol > 0 && vTok > 0) ? vSol / vTok : 2.8e-8; // قيمة منحنى الافتتاح القياسية
     S.candidates.set(m.mint, {
       symbol: m.symbol || m.name || m.mint.slice(0, 6),
-      openPrice: price || 0, lastPrice: price || 0,
-      buys: 0, sells: 0, firstSeen: Date.now(),
+      openPrice, lastPrice: openPrice,
+      buys: Number(m.initialBuy) > 0 ? 1 : 0, sells: 0,
+      firstSeen: Date.now(),
+      devBuySol: Number(m.solAmount) || 0,
+      mcapSol: Number(m.marketCapSol) || 0,
     });
-    subscribeMintTrades(m.mint);
+    log('info', `🆕 توكن جديد: ${m.symbol || m.name || m.mint.slice(0, 6)} — dev buy ${(Number(m.solAmount) || 0).toFixed(2)} SOL`);
     emit();
     return;
   }
-
-  // صفقة سوق حية على توكن نرصده أو نحمله
-  if (price > 0) {
-    S.prices.set(m.mint, price);
-
-    // حدّث قمة المركز المفتوح (للوقف المتحرك)
-    if (S.positions.has(m.mint)) {
-      const peak = S.peaks.get(m.mint) ?? price;
-      if (price > peak) S.peaks.set(m.mint, price);
-    }
-
-    // حدّث المرشح وقرر الدخول عند اكتمال الزخم
-    const cand = S.candidates.get(m.mint);
-    if (cand) {
-      cand.lastPrice = price;
-      if (m.isBuy === true || m.buy === true) cand.buys++; else cand.sells++;
-      maybeEnter(m.mint, cand);
-    }
-  }
 }
 
-/** الدخول فقط عند اكتمال شروط الزخم — لا شراء أعمى */
-function maybeEnter(mint: string, cand: { symbol: string; openPrice: number; lastPrice: number; buys: number; sells: number; firstSeen: number }) {
+/* ─────────── مصدر الأسعار: استقصاء DexScreener (مجاني وموثوق) ─────────── */
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+interface Candidate {
+  symbol: string; openPrice: number; lastPrice: number;
+  buys: number; sells: number; firstSeen: number;
+  devBuySol?: number; mcapSol?: number;
+}
+declare global { interface Window { __abCandidates?: any } }
+
+async function pollDexscreener() {
+  const mints: string[] = [
+    ...S.candidates.keys(),
+    ...S.positions.keys(),
+  ];
+  if (mints.length === 0) return;
+  // دفعة واحدة تصل 30 توكن في الطلب الواحد
+  for (let i = 0; i < mints.length; i += 30) {
+    const batch = mints.slice(i, i + 30);
+    try {
+      const url = `https://api.dexscreener.com/latest/dex/tokens/${batch.join(',')}`;
+      const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (!res.ok) continue;
+      const data: any = await res.json();
+      const byMint = new Map<string, any>();
+      for (const pair of (data.pairs || [])) {
+        const mint = pair.baseToken?.address;
+        if (!mint) continue;
+        const prev = byMint.get(mint);
+        // نفضّل زوج منحنى pump.fun نفسه
+        if (!prev || (pair.dexId === 'pumpfun' && prev.dexId !== 'pumpfun')) byMint.set(mint, pair);
+      }
+      for (const [mint, pair] of byMint) {
+        if (!S.candidates.has(mint) && !S.positions.has(mint)) continue;
+        const price = Number(pair.priceNative) || 0;
+        if (price > 0) {
+          S.prices.set(mint, price);
+          // قمة المركز للوقف المتحرك
+          if (S.positions.has(mint)) {
+            const peak = S.peaks.get(mint) ?? price;
+            if (price > peak) S.peaks.set(mint, price);
+          }
+          // زخم المرشح: عدد الصفقات من dexscreener مباشرة (أدق من عدّ إطارات WS)
+          const cand = S.candidates.get(mint);
+          if (cand) {
+            cand.lastPrice = price;
+            const t5 = pair.txns?.m5 || {};
+            const totalTx = (t5.buys || 0) + (t5.sells || 0);
+            cand.buys = Math.max(cand.buys, t5.buys || 0);
+            cand.sells = Math.max(cand.sells, t5.sells || 0);
+            if (totalTx > 0) maybeEnter(mint, cand, pair);
+          }
+        }
+      }
+    } catch { /* network — next cycle */ }
+  }
+  // تنظيف المرشحين المنتهين
+  const now = Date.now();
+  for (const [mint, c] of [...S.candidates.entries()]) {
+    if ((now - c.firstSeen) / 1000 > S.cfg.maxTokenAgeSec) S.candidates.delete(mint);
+  }
+  emit();
+}
+
+/** الدخول عند اكتمال الزخم — مع بيانات سيولة إضافية من DexScreener */
+function maybeEnter(mint: string, cand: Candidate, pair?: any) {
   if (!S.running || !S.cfg.snipe) return;
-  if (S.positions.has(mint)) return; // نحمله بالفعل
+  if (S.positions.has(mint)) return;
   const c = S.cfg;
-  const ageSec = (Date.now() - cand.firstSeen) / 1000;
-
-  // تجاهل المرشح إذا فات عمره أو انقلب لبيع كاسح
-  if (ageSec > c.maxTokenAgeSec) { S.candidates.delete(mint); unsubscribeMintTrades(mint); return; }
-
   const pumpPct = cand.openPrice > 0 ? (cand.lastPrice / cand.openPrice - 1) * 100 : 0;
-  const buyPressure = cand.buys / Math.max(1, cand.buys + cand.sells) * 100;
-
-  // شروط الدخول: عدد مشترين كافٍ + ارتفاع مؤكد + ضغط شراء غالب
-  if (cand.buys >= c.minBuySignals && pumpPct >= c.minPumpPct && buyPressure >= 70) {
+  const total = cand.buys + cand.sells;
+  const buyPressure = total > 0 ? cand.buys / total * 100 : 0;
+  // شرط سيولة إضافي إن توفرت بيانات DexScreener: مركز تداول حي
+  const liqUsd = pair?.liquidity?.usd || 0;
+  if (cand.buys >= c.minBuySignals && pumpPct >= c.minPumpPct && buyPressure >= 60 && liqUsd > 3000) {
     const nameOk = shouldSnipe(mint, cand.symbol, cand.symbol, 0);
-    if (!nameOk.ok) { S.candidates.delete(mint); unsubscribeMintTrades(mint); return; }
-    const ok = buyPaper(mint, cand.symbol, `زخم: ${cand.buys} مشتري +${pumpPct.toFixed(0)}%`);
+    if (!nameOk.ok) { S.candidates.delete(mint); return; }
+    const ok = buyPaper(mint, cand.symbol, `زخم: ${cand.buys} مشترين +${pumpPct.toFixed(0)}% (سيولة $${Math.round(liqUsd)})`);
     if (ok) {
       S.peaks.set(mint, cand.lastPrice);
       S.candidates.delete(mint);
-      subscribeMintTrades(mint);
     }
   }
-}
-
-/** اشترك في صفقات توكن نحمله — أسعار حية حقيقية للمركز */
-function subscribeMintTrades(mint: string) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [mint] }));
-  }
-}
-
-/** إلغاء الاشتراك بعد انتهاء الرصد — يمنع تراكم الاشتراكات وقتل السرعة */
-function unsubscribeMintTrades(mint: string) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    try {
-      ws.send(JSON.stringify({ method: 'unsubscribeTokenTrade', keys: [mint] }));
-    } catch { /* stream closed */ }
-  }
-  S.prices.delete(mint);
 }
 
 export function summary(): string {
